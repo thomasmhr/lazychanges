@@ -164,3 +164,16 @@ func TestAnyTerminalSizeRenders(t *testing.T) {
 		}
 	}
 }
+
+func TestTheViewEmptiesOnceEverythingIsCommitted(t *testing.T) {
+	dir := repo(t, t.TempDir(), map[string]string{"a.txt": "1\n"})
+	write(t, filepath.Join(dir, "a.txt"), "2\n")
+	write(t, filepath.Join(dir, "new.txt"), "n\n")
+	m := newTestModel(t, dir)
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-qm", "agent")
+	m.refresh()
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "no changes") || strings.Contains(v, "a.txt") {
+		t.Fatalf("view:\n%s", v)
+	}
+}

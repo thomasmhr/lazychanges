@@ -64,14 +64,15 @@ func TestCollectingNeverTouchesTheIndex(t *testing.T) {
 	}
 }
 
-func TestCommitsMadeDuringTheSessionStayVisible(t *testing.T) {
+func TestCommittedWorkLeavesTheList(t *testing.T) {
 	dir := repo(t, t.TempDir(), map[string]string{"a.txt": "1\n"})
 	ctx := detect(t, dir)
 	write(t, filepath.Join(dir, "a.txt"), "2\n")
-	run(t, dir, "git", "commit", "-qam", "agent")
 	write(t, filepath.Join(dir, "b.txt"), "b\n")
-
 	assertList(t, listing(Collect(ctx.Repos)), "M a.txt", "? b.txt")
+
+	run(t, dir, "git", "commit", "-qam", "agent")
+	assertList(t, listing(Collect(ctx.Repos)), "? b.txt")
 }
 
 func TestRepositoryWithoutCommits(t *testing.T) {

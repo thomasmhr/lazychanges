@@ -79,8 +79,8 @@ type Snapshot struct {
 	Errors  map[*Repo]error
 }
 
-// Collect gathers the changes of every repository in parallel, measured from the commit
-// each repository was at when the session started.
+// Collect gathers the changes of every repository in parallel: what is not committed yet,
+// measured from the current HEAD, so that committed work leaves the view.
 func Collect(repos []*Repo) Snapshot {
 	snap := Snapshot{Errors: map[*Repo]error{}}
 	results := make([][]Change, len(repos))
@@ -90,7 +90,7 @@ func Collect(repos []*Repo) Snapshot {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i], errs[i] = collectRepo(r, r.Head)
+			results[i], errs[i] = collectRepo(r, headCommit(r.Dir))
 		}()
 	}
 	wg.Wait()

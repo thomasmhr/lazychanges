@@ -21,7 +21,6 @@ type Repo struct {
 	Dir   string // absolute
 	Rel   string // relative to the context root, "." for the root itself
 	Scope string // pathspec relative to Dir, "" for the whole repository
-	Head  string // HEAD when the session started
 }
 
 type Context struct {
@@ -96,31 +95,12 @@ func Detect(dir string) (*Context, error) {
 	return ctx, nil
 }
 
-// Rediscover detects the context of root again, for repositories cloned or removed during
-// the session. Known repositories are kept as they are, so their session start does not move.
-func Rediscover(root string, known []*Repo) ([]*Repo, Kind, error) {
-	fresh, err := Detect(root)
-	if err != nil {
-		return nil, "", err
-	}
-	byDir := make(map[string]*Repo, len(known))
-	for _, r := range known {
-		byDir[r.Dir] = r
-	}
-	for i, r := range fresh.Repos {
-		if k := byDir[r.Dir]; k != nil {
-			fresh.Repos[i] = k
-		}
-	}
-	return fresh.Repos, fresh.Kind, nil
-}
-
 func newRepo(dir, root, scope string) *Repo {
 	rel, _ := filepath.Rel(root, dir)
 	if strings.HasPrefix(rel, "..") {
 		rel = "."
 	}
-	return &Repo{Dir: dir, Rel: filepath.ToSlash(rel), Scope: scope, Head: headCommit(dir)}
+	return &Repo{Dir: dir, Rel: filepath.ToSlash(rel), Scope: scope}
 }
 
 func within(path, dir string) bool {

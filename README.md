@@ -11,8 +11,8 @@ refresh on their own while agents work.
 
 - **One view for many repositories.** Started in a meta-repository, a folder of clones or a
   repository with submodules, it shows every repository as a branch of the same tree.
-- **Changes since the session started.** An agent that commits does not make its work vanish
-  from the view.
+- **What is not committed yet.** Changes are measured from each repository's current HEAD: once
+  the work is committed, it leaves the view.
 - **Review tracking.** `v` marks a file as reviewed; it becomes unreviewed again as soon as its
   content changes, so after an agent's turn only what it touched needs reading again.
 - **Read-only.** It never writes the index and never takes `index.lock`, so it cannot get in the

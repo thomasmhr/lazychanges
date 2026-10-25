@@ -158,7 +158,6 @@ func (m *model) renderHeader() string {
 	if len(m.ctx.Repos) > 1 {
 		parts = append(parts, fmt.Sprintf("%d repositories", len(m.ctx.Repos)))
 	}
-	parts = append(parts, "since "+m.started.Format("15:04"))
 	if m.loaded {
 		parts = append(parts, fmt.Sprintf("%d files %s %s", files, styleAdd.Render(fmt.Sprintf("+%d", add)), styleDel.Render(fmt.Sprintf("−%d", del))))
 		if n := m.reviewedCount(); n > 0 {

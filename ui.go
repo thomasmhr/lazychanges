@@ -94,8 +94,8 @@ func (m *model) collect() tea.Cmd {
 		start := time.Now()
 		msg := snapMsg{}
 		if rediscover {
-			if found, kind, err := Rediscover(root, repos); err == nil {
-				repos, msg.repos, msg.kind = found, found, kind
+			if fresh, err := Detect(root); err == nil {
+				repos, msg.repos, msg.kind = fresh.Repos, fresh.Repos, fresh.Kind
 			}
 		}
 		msg.snap = Collect(repos)
