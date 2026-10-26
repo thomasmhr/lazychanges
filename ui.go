@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -13,6 +14,7 @@ type tickMsg struct{ gen int }
 
 type snapMsg struct {
 	snap  Snapshot
+	hist  *Snapshot // collected only while the history is shown
 	took  time.Duration
 	repos []*Repo // set when the repositories were discovered again
 	kind  Kind
@@ -29,13 +31,13 @@ type model struct {
 	interval time.Duration
 	started  time.Time
 
-	snap     Snapshot
-	rows     []Row
-	cursor   int
-	selKey   string
-	listTop  int
+	// view is the list on screen, changes or history; each keeps its own rows and selection.
+	*view
+	changes, history *view
+	depth            int // index in depths
+	seen             map[string]bool
+
 	loading  bool
-	loaded   bool
 	tickGen  int
 	collects int
 
@@ -44,7 +46,6 @@ type model struct {
 
 	sigs      map[string]string
 	changedAt map[string]time.Time
-	collapsed map[string]bool
 	reviewed  map[string]review
 
 	diff     viewport.Model
@@ -57,19 +58,44 @@ type model struct {
 	width, height int
 }
 
+type view struct {
+	snap      Snapshot
+	rows      []Row
+	cursor    int
+	selKey    string
+	listTop   int
+	loaded    bool
+	collapsed map[string]bool
+}
+
+func newView() *view { return &view{cursor: -1, collapsed: map[string]bool{}} }
+
 func newModel(ctx *Context, interval time.Duration) *model {
-	return &model{
+	m := &model{
 		ctx:             ctx,
 		interval:        interval,
 		started:         time.Now(),
-		cursor:          -1,
+		changes:         newView(),
+		history:         newView(),
+		seen:            map[string]bool{},
 		rediscoverEvery: 15,
 		sigs:            map[string]string{},
 		changedAt:       map[string]time.Time{},
-		collapsed:       map[string]bool{},
 		reviewed:        map[string]review{},
 		diff:            viewport.New(0, 0),
 	}
+	m.view = m.changes
+	return m
+}
+
+func (m *model) inHistory() bool { return m.view == m.history }
+
+// on runs f with v as the current view, so a list off screen can be updated.
+func (m *model) on(v *view, f func()) {
+	prev := m.view
+	m.view = v
+	f()
+	m.view = prev
 }
 
 func (m *model) Init() tea.Cmd {
@@ -90,6 +116,7 @@ func (m *model) collect() tea.Cmd {
 	m.collects++
 	root, repos := m.ctx.Root, m.ctx.Repos
 	rediscover := m.collects%m.rediscoverEvery == 0
+	withHistory, depth := m.inHistory(), depths[m.depth]
 	return func() tea.Msg {
 		start := time.Now()
 		msg := snapMsg{}
@@ -99,6 +126,10 @@ func (m *model) collect() tea.Cmd {
 			}
 		}
 		msg.snap = Collect(repos)
+		if withHistory {
+			h := CollectHistory(repos, depth)
+			msg.hist = &h
+		}
 		msg.took = time.Since(start)
 		return msg
 	}
@@ -132,6 +163,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ctx.Repos, m.ctx.Kind = msg.repos, msg.kind
 		}
 		m.applySnapshot(msg.snap)
+		if msg.hist != nil {
+			m.applyHistory(*msg.hist)
+		}
 		return m, tea.Batch(m.syncDiff(), m.tick(msg.took))
 
 	case diffMsg:
@@ -190,8 +224,14 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 		m.jumpHunk(1)
 	case "N":
 		m.jumpHunk(-1)
+	case "tab":
+		return m.switchView()
+	case "m":
+		return m.widen(1)
+	case "M":
+		return m.widen(-1)
 	case "v":
-		if m.toggleReviewed() {
+		if !m.inHistory() && m.toggleReviewed() {
 			return m.nextUnreviewed()
 		}
 	case "w":
@@ -313,16 +353,70 @@ func (m *model) applySnapshot(snap Snapshot) {
 		}
 	}
 	m.sigs = sigs
-	m.snap = snap
-	m.loaded = true
-	m.recheckReviews()
-	m.rebuild()
+	m.on(m.changes, func() {
+		m.snap = snap
+		m.loaded = true
+		m.recheckReviews()
+		m.rebuild()
+	})
+}
+
+// applyHistory shows commits folded the first time they appear.
+func (m *model) applyHistory(snap Snapshot) {
+	m.on(m.history, func() {
+		for _, c := range snap.Commits {
+			if k := c.Key(); !m.seen[k] {
+				m.seen[k] = true
+				m.collapsed[k] = true
+			}
+		}
+		m.snap = snap
+		m.loaded = true
+		m.rebuild()
+	})
+}
+
+// switchView goes from the changes to the history and back; the history is read at once.
+func (m *model) switchView() tea.Cmd {
+	if m.inHistory() {
+		m.view = m.changes
+	} else {
+		m.view = m.history
+	}
+	m.scrollList()
+	cmd := m.syncDiff()
+	if m.inHistory() && !m.loading {
+		m.loading = true
+		return tea.Batch(cmd, m.collect())
+	}
+	return cmd
+}
+
+// widen shows more of the history, or less.
+func (m *model) widen(step int) tea.Cmd {
+	if !m.inHistory() {
+		return nil
+	}
+	d := max(0, min(len(depths)-1, m.depth+step))
+	if d == m.depth {
+		return nil
+	}
+	m.depth = d
+	if m.loading {
+		return nil
+	}
+	m.loading = true
+	return m.collect()
 }
 
 // rebuild lays the rows out again and puts the cursor back on the same row; if that row
 // is gone, on the row now at its place, and on the first file at the start.
 func (m *model) rebuild() {
-	m.rows = BuildTree(m.ctx, m.snap, m.collapsed)
+	if m.inHistory() {
+		m.rows = BuildHistory(m.ctx, m.snap, m.collapsed)
+	} else {
+		m.rows = BuildTree(m.ctx, m.snap, m.collapsed)
+	}
 	old := m.cursor
 	m.cursor = -1
 	for i, r := range m.rows {
@@ -419,7 +513,11 @@ func (m *model) syncDiff() tea.Cmd {
 			m.wrap = false
 		}
 		m.diffKey, m.diffSig = r.Key, ""
-		m.lines = m.summary(r)
+		if r.Kind == RowCommit {
+			m.lines = m.commitSummary(r)
+		} else {
+			m.lines = m.summary(r)
+		}
 		m.refreshDiffContent(same)
 		return nil
 	}
@@ -436,10 +534,42 @@ func (m *model) summary(r Row) []diffLine {
 	if len(r.Files) == 1 {
 		count = "1 changed file"
 	}
-	lines := []diffLine{{count, styleDim}, {"", plain}}
-	for _, i := range r.Files {
+	return append([]diffLine{{count, styleDim}, {"", plain}}, m.fileLines(r.Files)...)
+}
+
+func (m *model) fileLines(files []int) []diffLine {
+	var lines []diffLine
+	for _, i := range files {
 		c := m.snap.Changes[i]
 		lines = append(lines, diffLine{fmt.Sprintf("%c %s  %s", c.Status, printable(c.Display()), c.Stat()), statusStyles[c.Status]})
 	}
 	return lines
+}
+
+func (m *model) commitSummary(r Row) []diffLine {
+	plain := lipgloss.NewStyle()
+	c := m.snap.Commits[r.Commit]
+	head := []string{c.Short(), repoLabel(m.ctx, c.Repo), c.Author, c.Time.Format("Mon Jan 2 15:04")}
+	lines := []diffLine{{strings.Join(head, " · "), styleHunk}}
+	if c.Unpushed {
+		lines = append(lines, diffLine{"↑ not pushed", styleUnpushed})
+	}
+	add, del := 0, 0
+	for _, i := range r.Files {
+		add += m.snap.Changes[i].Add
+		del += m.snap.Changes[i].Del
+	}
+	count := fmt.Sprintf("%d changed files", len(r.Files))
+	if len(r.Files) == 1 {
+		count = "1 changed file"
+	}
+	lines = append(lines, diffLine{fmt.Sprintf("%s  +%d −%d", count, add, del), styleDim})
+	lines = append(lines, diffLine{"", plain})
+	if _, body, ok := strings.Cut(c.Message, "\n"); ok {
+		for _, l := range strings.Split(strings.TrimSpace(body), "\n") {
+			lines = append(lines, diffLine{printable(l), plain})
+		}
+		lines = append(lines, diffLine{"", plain})
+	}
+	return append(lines, m.fileLines(r.Files)...)
 }

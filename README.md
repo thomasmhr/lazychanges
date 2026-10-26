@@ -1,7 +1,7 @@
 # lazychanges
 
 Watch what your coding agents change, live, across every repository under the current
-directory — and keep track of what you have already reviewed.
+directory — keep track of what you have already reviewed, and look back at what they committed.
 
 ![lazychanges: a coding agent edits files while the view follows](demo/demo.gif)
 
@@ -12,7 +12,10 @@ refresh on their own while agents work.
 - **One view for many repositories.** Started in a meta-repository, a folder of clones or a
   repository with submodules, it shows every repository as a branch of the same tree.
 - **What is not committed yet.** Changes are measured from each repository's current HEAD: once
-  the work is committed, it leaves the view.
+  the work is committed, it leaves the view for the history.
+- **History across repositories.** `tab` turns to the commits of every repository on one
+  timeline, newest first: the latest 100, plus whatever is not pushed yet, marked `↑`. Each
+  commit unfolds into its files and their diff at that commit.
 - **Review tracking.** `v` marks a file as reviewed; it becomes unreviewed again as soon as its
   content changes, so after an agent's turn only what it touched needs reading again.
 - **Read-only.** It never writes the index and never takes `index.lock`, so it cannot get in the
@@ -53,6 +56,8 @@ Repositories cloned or removed during the session show up within about thirty se
 | `enter` | fold or unfold the repository or directory |
 | `-` `+` | fold, unfold everything |
 | `v` | mark the file, or every file of the branch, as reviewed (again: unmark) |
+| `tab` | switch between the changes and the history; each keeps its selection |
+| `m` `M` | in the history, show more commits (200, 500) or fewer |
 | `space` `b`, `ctrl-d` `ctrl-u` | scroll the diff |
 | `n` `N` | next, previous hunk |
 | `w` | wrap long lines (on by default for `.md` and `.txt`) |
@@ -65,7 +70,11 @@ folds a directory. To select text with the mouse, hold `shift` while dragging.
 
 - A file that just changed carries a `●` for fifteen seconds; a reviewed file turns grey with a
   `√`, and the header counts how many are left.
-- Reviews last as long as the session.
+- Reviews last as long as the session, and are for the changes only.
+- The history follows the current branch of each repository and refreshes like the changes
+  while it is shown. A commit is unpushed when it is on no remote-tracking branch; a repository
+  without remotes marks none. A commit's date fades with its age: amber within the hour, then
+  plain today, blue-grey yesterday, grey before.
 - Files over 2 MB are listed with their size; their diff is not loaded.
 - Control characters in a file are shown in caret notation (`^M`, `^[`), never sent to the
   terminal.

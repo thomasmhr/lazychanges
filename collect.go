@@ -26,6 +26,7 @@ const (
 type Change struct {
 	Repo     *Repo
 	Base     string
+	Commit   string // in the history, the commit the change belongs to; "" for the work tree
 	Path     string // relative to the repository
 	Status   Status
 	Add, Del int
@@ -57,7 +58,12 @@ func (c Change) counted() bool {
 func (c Change) Large() bool { return c.Size > maxDiffSize }
 
 // Key identifies a file across refreshes.
-func (c Change) Key() string { return c.Repo.Dir + "\x00" + c.Path }
+func (c Change) Key() string {
+	if c.Commit != "" {
+		return c.Repo.Dir + "\x00" + c.Commit + "\x00" + c.Path
+	}
+	return c.Repo.Dir + "\x00" + c.Path
+}
 
 // Display is the path relative to the context root.
 func (c Change) Display() string {
@@ -76,6 +82,7 @@ func (c Change) signature() string {
 
 type Snapshot struct {
 	Changes []Change
+	Commits []Commit // in the history
 	Errors  map[*Repo]error
 }
 
@@ -126,27 +133,9 @@ func collectRepo(r *Repo, base string) ([]Change, error) {
 		return nil, err
 	}
 
-	byPath := map[string]*Change{}
-	var changes []*Change
-	parts := splitZ(ns)
-	for i := 0; i+1 < len(parts); i += 2 {
-		c := &Change{Repo: r, Base: base, Path: parts[i+1], Status: Status(parts[i][0])}
-		byPath[c.Path] = c
-		changes = append(changes, c)
-	}
-	for _, rec := range splitZ(num) {
-		f := strings.SplitN(rec, "\t", 3)
-		if len(f) != 3 {
-			continue
-		}
-		if c := byPath[f[2]]; c != nil {
-			if f[0] == "-" {
-				c.Binary = true
-			} else {
-				c.Add, _ = strconv.Atoi(f[0])
-				c.Del, _ = strconv.Atoi(f[1])
-			}
-		}
+	changes := parseStatus(r, ns, num)
+	for _, c := range changes {
+		c.Base = base
 	}
 	for _, p := range splitZ(untracked) {
 		if strings.HasSuffix(p, "/") {
@@ -168,9 +157,39 @@ func collectRepo(r *Repo, base string) ([]Change, error) {
 	return out, nil
 }
 
+// parseStatus reads the output of --name-status -z and --numstat -z, without renames.
+func parseStatus(r *Repo, ns, num []byte) []*Change {
+	byPath := map[string]*Change{}
+	var changes []*Change
+	parts := splitZ(ns)
+	for i := 0; i+1 < len(parts); i += 2 {
+		c := &Change{Repo: r, Path: parts[i+1], Status: Status(parts[i][0])}
+		byPath[c.Path] = c
+		changes = append(changes, c)
+	}
+	for _, rec := range splitZ(num) {
+		f := strings.SplitN(rec, "\t", 3)
+		if len(f) != 3 {
+			continue
+		}
+		if c := byPath[f[2]]; c != nil {
+			if f[0] == "-" {
+				c.Binary = true
+			} else {
+				c.Add, _ = strconv.Atoi(f[0])
+				c.Del, _ = strconv.Atoi(f[1])
+			}
+		}
+	}
+	return changes
+}
+
 // maxDiffSize bounds the files whose diff is read: a log or a dump left by an agent is
 // listed, not loaded.
 const maxDiffSize = 2 << 20
+
+// maxDiffLines plays the same part for the files of a commit, which are not on disk.
+const maxDiffLines = 50000
 
 // lineCounts remembers the line count of untracked files, read again only when they change.
 var lineCounts = &lineCache{m: map[string]lineCount{}}
@@ -223,9 +242,14 @@ func Diff(c Change) (string, error) {
 	}
 	var out []byte
 	var err error
-	if c.Status == Untracked {
+	switch {
+	case c.Commit != "" && c.Add+c.Del > maxDiffLines:
+		return fmt.Sprintf("Too large to show (%d lines).\n", c.Add+c.Del), nil
+	case c.Commit != "":
+		out, err = git(c.Repo.Dir, "diff", "--no-color", "--no-ext-diff", "--no-renames", c.Base, c.Commit, "--", c.Path)
+	case c.Status == Untracked:
 		out, err = gitAllowing(c.Repo.Dir, []int{1}, "diff", "--no-color", "--no-ext-diff", "--no-index", "--", "/dev/null", c.Path)
-	} else {
+	default:
 		out, err = git(c.Repo.Dir, "diff", "--no-color", "--no-ext-diff", "--no-renames", c.Base, "--", c.Path)
 	}
 	return string(out), err

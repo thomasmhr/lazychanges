@@ -107,6 +107,8 @@ func press(m *model, keys ...string) {
 		switch k {
 		case "enter":
 			msg = tea.KeyMsg{Type: tea.KeyEnter}
+		case "tab":
+			msg = tea.KeyMsg{Type: tea.KeyTab}
 		case "left":
 			msg = tea.KeyMsg{Type: tea.KeyLeft}
 		case "right":

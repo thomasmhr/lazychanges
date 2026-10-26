@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ var (
 	styleFresh    = lipgloss.NewStyle().Foreground(colFresh).Bold(true)
 	styleErr      = lipgloss.NewStyle().Foreground(colErr)
 	styleSelected = lipgloss.NewStyle().Reverse(true)
+	styleUnpushed = lipgloss.NewStyle().Foreground(colMod)
 	statusStyles  = map[Status]lipgloss.Style{
 		Added:     styleAdd,
 		Untracked: styleAdd,
@@ -149,6 +151,9 @@ func (m *model) View() string {
 }
 
 func (m *model) renderHeader() string {
+	if m.inHistory() {
+		return m.renderHistoryHeader()
+	}
 	files, add, del := len(m.snap.Changes), 0, 0
 	for _, c := range m.snap.Changes {
 		add += c.Add
@@ -167,8 +172,32 @@ func (m *model) renderHeader() string {
 	return padRight(" "+strings.Join(parts, styleDim.Render(" · ")), m.width)
 }
 
+func (m *model) renderHistoryHeader() string {
+	parts := []string{styleHeader.Render(m.ctx.Name), "history", fmt.Sprintf("latest %d", depths[m.depth])}
+	if m.loaded {
+		unpushed := 0
+		for _, c := range m.snap.Commits {
+			if c.Unpushed {
+				unpushed++
+			}
+		}
+		count := fmt.Sprintf("%d commits", len(m.snap.Commits))
+		if len(m.snap.Commits) == 1 {
+			count = "1 commit"
+		}
+		parts = append(parts, count)
+		if unpushed > 0 {
+			parts = append(parts, styleUnpushed.Render(fmt.Sprintf("↑ %d not pushed", unpushed)))
+		}
+	}
+	return padRight(" "+strings.Join(parts, styleDim.Render(" · ")), m.width)
+}
+
 func (m *model) renderFooter() string {
-	help := " j/k move  h/l fold  v reviewed  space scroll  n/N hunk  w wrap  q quit"
+	help := " j/k move  h/l fold  v reviewed  space scroll  n/N hunk  w wrap  tab history  q quit"
+	if m.inHistory() {
+		help = " j/k move  h/l fold  m/M more/fewer  space scroll  n/N hunk  w wrap  tab changes  q quit"
+	}
 	return styleDim.Render(padRight(runewidth.Truncate(help, m.width, ""), m.width))
 }
 
@@ -177,6 +206,8 @@ func (m *model) renderList(w, h int) string {
 	switch {
 	case !m.loaded:
 		lines = append(lines, styleDim.Render(" reading…"))
+	case len(m.rows) == 0 && m.inHistory():
+		lines = append(lines, styleDim.Render(" no commits"))
 	case len(m.rows) == 0:
 		lines = append(lines, styleDim.Render(" no changes"))
 	}
@@ -195,6 +226,9 @@ func (m *model) renderList(w, h int) string {
 
 func (m *model) renderRow(r Row, selected bool, w int, now time.Time) string {
 	indent := strings.Repeat("  ", r.Depth)
+	if r.Kind == RowCommit {
+		return m.renderCommit(r, selected, w, now)
+	}
 	if r.Foldable() {
 		arrow := "▾"
 		if r.Collapsed {
@@ -257,11 +291,67 @@ func (m *model) renderRow(r Row, selected bool, w int, now time.Time) string {
 	return mark + indent + statusStyles[c.Status].Render(status) + " " + name + strings.Repeat(" ", gap) + statStyled
 }
 
+// renderCommit lays a commit out as: unpushed mark, fold arrow, time, repository, subject.
+// Its size is in the summary on the right.
+func (m *model) renderCommit(r Row, selected bool, w int, now time.Time) string {
+	c := m.snap.Commits[r.Commit]
+	mark := " "
+	if c.Unpushed {
+		mark = "↑"
+	}
+	arrow := "▾"
+	if r.Collapsed {
+		arrow = "▸"
+	}
+	date := fmt.Sprintf("%-6s", when(c.Time, now))
+	prefix := arrow + " " + date + " "
+	repo := ""
+	if len(m.ctx.Repos) > 1 {
+		repo = runewidth.FillRight(runewidth.Truncate(shortRepoLabel(m.ctx, c.Repo), m.repoWidth(), "…"), m.repoWidth()) + " "
+	}
+	fixed := 1 + runewidth.StringWidth(prefix) + runewidth.StringWidth(repo)
+	subject := runewidth.Truncate(printable(r.Label), max(1, w-fixed), "…")
+	if selected {
+		return styleSelected.Render(padRight(runewidth.Truncate(mark+prefix+repo+subject, w, ""), w))
+	}
+	return styleUnpushed.Render(mark) + styleDim.Render(arrow+" ") + ageStyle(c.Time, now).Render(date) + " " + styleRepo.Render(repo) + subject
+}
+
+// ageStyle fades a commit's date with its age: the last hour, today, yesterday, before.
+func ageStyle(t, now time.Time) lipgloss.Style {
+	y, m, d := now.Date()
+	today := time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+	switch {
+	case now.Sub(t) < time.Hour:
+		return styleFresh
+	case !t.Before(today):
+		return lipgloss.NewStyle()
+	case !t.Before(today.AddDate(0, 0, -1)):
+		return styleDir
+	}
+	return styleDim
+}
+
+// repoWidth is the width of the repository column of the history: its longest name, within reason.
+func (m *model) repoWidth() int {
+	n := 0
+	for _, c := range m.snap.Commits {
+		n = max(n, runewidth.StringWidth(shortRepoLabel(m.ctx, c.Repo)))
+	}
+	return min(n, 12)
+}
+
+func shortRepoLabel(ctx *Context, r *Repo) string { return path.Base(repoLabel(ctx, r)) }
+
 func (m *model) renderDiffPane() string {
 	w := m.diff.Width
 	title := ""
 	if c, ok := m.selected(); ok {
-		title = styleHeader.Render(runewidth.Truncate(" "+printable(c.Display()), w, "…"))
+		name := printable(c.Display())
+		if c.Commit != "" {
+			name = c.Commit[:min(len(c.Commit), 7)] + " " + name
+		}
+		title = styleHeader.Render(runewidth.Truncate(" "+name, w, "…"))
 	} else if m.cursor >= 0 && m.cursor < len(m.rows) {
 		title = styleHeader.Render(runewidth.Truncate(" "+printable(m.rows[m.cursor].Label), w, "…"))
 	}

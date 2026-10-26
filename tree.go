@@ -13,6 +13,7 @@ const (
 	RowDir
 	RowFile
 	RowNote
+	RowCommit
 )
 
 type Row struct {
@@ -22,14 +23,22 @@ type Row struct {
 	Label     string
 	Parent    int   // index of the enclosing repo or directory row, -1 at the top
 	Change    int   // index in the snapshot, for RowFile
-	Files     []int // every change below, for RowRepo and RowDir
+	Commit    int   // index in the snapshot, for RowCommit
+	Files     []int // every change below, for RowRepo, RowDir and RowCommit
 	Collapsed bool
 }
 
-func (r Row) Foldable() bool { return r.Kind == RowRepo || r.Kind == RowDir }
+func (r Row) Foldable() bool { return r.Kind == RowRepo || r.Kind == RowDir || r.Kind == RowCommit }
 
-func repoKey(r *Repo) string          { return "R" + r.Dir }
-func dirKey(r *Repo, p string) string { return "D" + r.Dir + "\x00" + p }
+func repoKey(r *Repo) string            { return "R" + r.Dir }
+func dirKey(ns string, p string) string { return "D" + ns + "\x00" + p }
+
+func repoLabel(ctx *Context, r *Repo) string {
+	if r.Rel == "." {
+		return ctx.Name
+	}
+	return r.Rel
+}
 
 // BuildTree lays the changes out as a tree: one branch per repository when there are
 // several, then directories, with chains of single directories folded into one row.
@@ -50,12 +59,8 @@ func BuildTree(ctx *Context, snap Snapshot, collapsed map[string]bool) []Row {
 		}
 		depth, parent := 0, -1
 		if multi {
-			label := r.Rel
-			if label == "." {
-				label = ctx.Name
-			}
 			key := repoKey(r)
-			rows = append(rows, Row{Kind: RowRepo, Key: key, Label: label, Parent: -1, Files: idx, Collapsed: collapsed[key]})
+			rows = append(rows, Row{Kind: RowRepo, Key: key, Label: repoLabel(ctx, r), Parent: -1, Files: idx, Collapsed: collapsed[key]})
 			if collapsed[key] {
 				continue
 			}
@@ -64,7 +69,29 @@ func BuildTree(ctx *Context, snap Snapshot, collapsed map[string]bool) []Row {
 		if err != nil {
 			rows = append(rows, Row{Kind: RowNote, Depth: depth, Parent: parent, Label: firstLine(err.Error())})
 		}
-		rows = dirRows(rows, r, snap, idx, depth, parent, collapsed)
+		rows = dirRows(rows, r.Dir, snap, idx, depth, parent, collapsed)
+	}
+	return rows
+}
+
+// BuildHistory lays the commits out newest first, each a branch holding the tree of its files.
+func BuildHistory(ctx *Context, snap Snapshot, collapsed map[string]bool) []Row {
+	var rows []Row
+	for _, r := range ctx.Repos {
+		if err := snap.Errors[r]; err != nil {
+			rows = append(rows, Row{Kind: RowNote, Parent: -1, Label: repoLabel(ctx, r) + ": " + firstLine(err.Error())})
+		}
+	}
+	for i, c := range snap.Commits {
+		var idx []int
+		for j := c.Start; j < c.End; j++ {
+			idx = append(idx, j)
+		}
+		key := c.Key()
+		rows = append(rows, Row{Kind: RowCommit, Key: key, Label: c.Subject(), Parent: -1, Commit: i, Files: idx, Collapsed: collapsed[key]})
+		if !collapsed[key] {
+			rows = dirRows(rows, c.Repo.Dir+"\x00"+c.Hash, snap, idx, 1, len(rows)-1, collapsed)
+		}
 	}
 	return rows
 }
@@ -75,7 +102,7 @@ type node struct {
 	all   []int
 }
 
-func dirRows(rows []Row, r *Repo, snap Snapshot, idx []int, depth, parent int, collapsed map[string]bool) []Row {
+func dirRows(rows []Row, ns string, snap Snapshot, idx []int, depth, parent int, collapsed map[string]bool) []Row {
 	root := &node{dirs: map[string]*node{}}
 	for _, i := range idx {
 		parts := strings.Split(scoped(snap.Changes[i]), "/")
@@ -105,7 +132,7 @@ func dirRows(rows []Row, r *Repo, snap Snapshot, idx []int, depth, parent int, c
 					d = child
 				}
 			}
-			key := dirKey(r, prefix+label)
+			key := dirKey(ns, prefix+label)
 			rows = append(rows, Row{Kind: RowDir, Key: key, Depth: depth, Label: label + "/", Parent: parent, Files: d.all, Collapsed: collapsed[key]})
 			if !collapsed[key] {
 				walk(d, prefix+label+"/", depth+1, len(rows)-1)

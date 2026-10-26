@@ -161,6 +161,11 @@ func TestAnyTerminalSizeRenders(t *testing.T) {
 			m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 			press(m, "j", "w", "n", " ", "h", "l", "v")
 			m.View()
+			press(m, "tab")
+			m.refresh()
+			press(m, "l", "j", "w", "n", "m", "h")
+			m.View()
+			press(m, "tab")
 		}
 	}
 }

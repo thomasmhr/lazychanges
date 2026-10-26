@@ -1,5 +1,6 @@
 // lazychanges shows, live, what has been modified in the repository or repositories under
-// the current directory. It only reads: no command touches the index or the work tree.
+// the current directory, and the commits made in them. It only reads: no command touches the
+// index or the work tree.
 package main
 
 import (
