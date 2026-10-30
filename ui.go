@@ -52,8 +52,15 @@ type model struct {
 	diffKey  string
 	diffSig  string
 	lines    []diffLine
+	isDiff   bool // lines are those of a diff, not a summary
 	wrap     bool
 	hunkRows []int
+	segs     []segment // the rows of the diff pane
+	painted  []string  // the rows rendered without the selection
+	sel      selection
+
+	notice      string
+	noticeUntil time.Time
 
 	width, height int
 }
@@ -175,9 +182,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sameFile := msg.key == m.diffKey
 		m.diffKey, m.diffSig = msg.key, msg.sig
 		if msg.err != nil {
-			m.lines = []diffLine{{msg.err.Error(), styleErr}}
+			m.setLines([]diffLine{{msg.err.Error(), styleErr}}, false)
 		} else {
-			m.lines = parseDiff(msg.text)
+			m.setLines(parseDiff(msg.text), true)
 		}
 		if !sameFile {
 			m.wrap = wrapsByDefault(msg.key)
@@ -187,6 +194,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseMsg:
 		return m, m.mouse(msg)
+
+	case dragScrollMsg:
+		return m, m.dragScrolled()
+
+	case copiedMsg:
+		return m, m.copied(msg)
 
 	case tea.KeyMsg:
 		return m, m.key(msg)
@@ -198,6 +211,8 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return tea.Quit
+	case "esc":
+		m.clearSelection()
 	case "j", "down":
 		return m.move(1)
 	case "k", "up":
@@ -243,6 +258,9 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 
 func (m *model) mouse(msg tea.MouseMsg) tea.Cmd {
 	left := m.leftWidth()
+	if m.sel.dragging || msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress && msg.X > left {
+		return m.diffMouse(msg)
+	}
 	switch msg.Button {
 	case tea.MouseButtonWheelDown:
 		if msg.X < left {
@@ -501,7 +519,8 @@ func (m *model) selected() (Change, bool) {
 // A repository or directory shows the files below it.
 func (m *model) syncDiff() tea.Cmd {
 	if m.cursor < 0 {
-		m.selKey, m.diffKey, m.lines = "", "", nil
+		m.selKey, m.diffKey = "", ""
+		m.setLines(nil, false)
 		m.refreshDiffContent(false)
 		return nil
 	}
@@ -514,9 +533,9 @@ func (m *model) syncDiff() tea.Cmd {
 		}
 		m.diffKey, m.diffSig = r.Key, ""
 		if r.Kind == RowCommit {
-			m.lines = m.commitSummary(r)
+			m.setLines(m.commitSummary(r), false)
 		} else {
-			m.lines = m.summary(r)
+			m.setLines(m.summary(r), false)
 		}
 		m.refreshDiffContent(same)
 		return nil

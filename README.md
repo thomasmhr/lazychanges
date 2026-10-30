@@ -61,10 +61,18 @@ Repositories cloned or removed during the session show up within about thirty se
 | `space` `b`, `ctrl-d` `ctrl-u` | scroll the diff |
 | `n` `N` | next, previous hunk |
 | `w` | wrap long lines (on by default for `.md` and `.txt`) |
+| `esc` | clear the selection in the diff |
 | `q` | quit |
 
 The mouse wheel scrolls the list or the diff depending on the pane; a click selects a file or
-folds a directory. To select text with the mouse, hold `shift` while dragging.
+folds a directory.
+
+In the diff, drag to select text, double-click to select a word, triple-click a line; dragging
+above or below the pane scrolls it. The selection is copied to the clipboard as the button is
+released, without the `+`, `-` or space that starts each line of a diff, and with its tabs;
+`esc` clears it. The copy goes through the terminal (OSC 52), which Windows Terminal, iTerm2,
+kitty, WezTerm, Alacritty and foot accept; inside tmux, `set -g set-clipboard on` lets it
+through. To select with the terminal itself, hold `shift` while dragging.
 
 ## Details
 

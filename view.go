@@ -66,25 +66,36 @@ func (m *model) layout() {
 
 func (m *model) refreshDiffContent(keepOffset bool) {
 	w := max(1, m.diff.Width)
-	out := make([]string, 0, len(m.lines))
-	m.hunkRows = m.hunkRows[:0]
-	for _, l := range m.lines {
-		if strings.HasPrefix(l.text, "@@") {
-			m.hunkRows = append(m.hunkRows, len(out))
+	m.segs, m.painted, m.hunkRows = m.segs[:0], m.painted[:0], m.hunkRows[:0]
+	for i, l := range m.lines {
+		text := expandTabs(l.text)
+		if strings.HasPrefix(text, "@@") {
+			m.hunkRows = append(m.hunkRows, len(m.segs))
 		}
-		if !m.wrap || runewidth.StringWidth(l.text) <= w {
-			out = append(out, l.style.Render(runewidth.Truncate(l.text, w, "")))
+		if !m.wrap || runewidth.StringWidth(text) <= w {
+			m.segs = append(m.segs, segment{line: i, text: runewidth.Truncate(text, w, ""), style: l.style, last: true})
 			continue
 		}
-		for i, part := range strings.Split(ansi.Wrap(l.text, w-1, ""), "\n") {
-			if i > 0 {
-				part = " " + part
+		parts := strings.Split(ansi.Wrap(text, w-1, ""), "\n")
+		at := 0
+		for j, part := range parts {
+			// Wrapping may drop the spaces it breaks at: find where each part starts.
+			if k := strings.Index(text[at:], part); k >= 0 {
+				at += k
 			}
-			out = append(out, l.style.Render(part))
+			s := segment{line: i, col: runewidth.StringWidth(text[:at]), text: part, style: l.style, last: j == len(parts)-1}
+			if j > 0 {
+				s.indent = 1
+			}
+			m.segs = append(m.segs, s)
+			at += len(part)
 		}
 	}
+	for _, s := range m.segs {
+		m.painted = append(m.painted, s.style.Render(strings.Repeat(" ", s.indent)+s.text))
+	}
 	off := m.diff.YOffset
-	m.diff.SetContent(strings.Join(out, "\n"))
+	m.paintSelection()
 	if keepOffset {
 		m.diff.SetYOffset(off)
 	} else {
@@ -197,6 +208,9 @@ func (m *model) renderFooter() string {
 	help := " j/k move  h/l fold  v reviewed  space scroll  n/N hunk  w wrap  tab history  q quit"
 	if m.inHistory() {
 		help = " j/k move  h/l fold  m/M more/fewer  space scroll  n/N hunk  w wrap  tab changes  q quit"
+	}
+	if time.Now().Before(m.noticeUntil) {
+		help = " " + m.notice
 	}
 	return styleDim.Render(padRight(runewidth.Truncate(help, m.width, ""), m.width))
 }
@@ -365,10 +379,14 @@ type diffLine struct {
 
 // parseDiff styles a diff line by line and drops the git headers the title already says.
 func parseDiff(text string) []diffLine {
-	text = strings.ReplaceAll(text, "\t", "    ")
 	raw := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	for i, l := range raw {
-		raw[i] = printable(strings.TrimSuffix(l, "\r"))
+		// Tabs are kept, to be copied as they are, and expanded on screen.
+		parts := strings.Split(strings.TrimSuffix(l, "\r"), "\t")
+		for j, p := range parts {
+			parts[j] = printable(p)
+		}
+		raw[i] = strings.Join(parts, "\t")
 	}
 	start := 0
 	for i, l := range raw {
